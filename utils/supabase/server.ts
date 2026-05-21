@@ -1,8 +1,7 @@
-import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
-// Bypasses RLS — server-only, never expose this key to the browser.
+// Admin client uses service role key — bypasses RLS, server-only.
 export const createAdminClient = () => {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -10,8 +9,8 @@ export const createAdminClient = () => {
   if (!supabaseUrl) throw new Error("NEXT_PUBLIC_SUPABASE_URL is not set.");
   if (!serviceRoleKey) throw new Error("SUPABASE_SERVICE_ROLE_KEY is not set.");
 
-  return createSupabaseClient(supabaseUrl, serviceRoleKey, {
-    auth: { persistSession: false },
+  return createServerClient(supabaseUrl, serviceRoleKey, {
+    cookies: { getAll: () => [], setAll: () => {} },
   });
 };
 
@@ -21,7 +20,7 @@ export const createClient = async () => {
 
   if (!supabaseUrl || !supabaseKey) {
     throw new Error(
-      "Missing Supabase env vars: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY must be set."
+      "Missing env vars: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY must be set."
     );
   }
 
