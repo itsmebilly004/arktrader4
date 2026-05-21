@@ -3,7 +3,6 @@ import Dashboard, { type Trade } from "@/app/components/Dashboard";
 
 export const revalidate = 0;
 
-
 export default async function Page() {
   const supabase = createAdminClient();
 
@@ -45,10 +44,9 @@ export default async function Page() {
       .order("created_at", { ascending: false }),
   ]);
 
-  // Log errors server-side so they appear in Vercel function logs.
   const errors = { tradesErr, auditErr, botsErr, sessionsErr, accountsErr };
   for (const [key, err] of Object.entries(errors)) {
-    if (err) console.error(`[page] Supabase query error (${key}):`, err.message);
+    if (err) console.error(`[page] Supabase error (${key}):`, err.message, err.code);
   }
 
   return (
