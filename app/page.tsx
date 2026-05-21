@@ -1,6 +1,7 @@
 import { createClient } from "@/utils/supabase/server";
 import Dashboard, { type Trade, type DailyVolume } from "@/app/components/Dashboard";
 
+
 export const revalidate = 0;
 
 export default async function Page() {
