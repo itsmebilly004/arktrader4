@@ -499,12 +499,7 @@ export default function Dashboard({
   useEffect(() => {
     const supabase = createClient();
 
-    type RTPayload<T = Record<string, unknown>> = {
-      eventType: "INSERT" | "UPDATE" | "DELETE";
-      new: T;
-      old: T;
-      table: string;
-    };
+    type RTPayload = { new: Record<string, unknown>; old: Record<string, unknown> };
 
     const channel = supabase
       .channel("dashboard-rt")
@@ -527,7 +522,6 @@ export default function Dashboard({
           setTimeout(() => setPulseId(null), 2000);
           setTrades((prev) => [trade, ...prev.slice(0, 49)]);
 
-          // Update today's daily-volume bucket
           const ref = accountRef(trade);
           if (ref) {
             const today = new Date().toISOString().slice(0, 10);
@@ -571,69 +565,102 @@ export default function Dashboard({
       // ── DERIV ACCOUNTS (balances) ──
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "deriv_accounts" },
-        (payload: RTPayload<DerivAccount>) => {
+        { event: "INSERT", schema: "public", table: "deriv_accounts" },
+        (payload: RTPayload) => {
           touch();
-          if (payload.eventType === "INSERT") {
-            setAccounts((prev) => [payload.new, ...prev]);
-          } else if (payload.eventType === "UPDATE") {
-            setPulseAccountId(payload.new.id);
-            setTimeout(() => setPulseAccountId(null), 2000);
-            setAccounts((prev) =>
-              prev.map((a) => (a.id === payload.new.id ? { ...a, ...payload.new } : a))
-            );
-          } else if (payload.eventType === "DELETE") {
-            setAccounts((prev) => prev.filter((a) => a.id !== payload.old.id));
-          }
+          setAccounts((prev) => [payload.new as unknown as DerivAccount, ...prev]);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "deriv_accounts" },
+        (payload: RTPayload) => {
+          touch();
+          const updated = payload.new as unknown as DerivAccount;
+          setPulseAccountId(updated.id);
+          setTimeout(() => setPulseAccountId(null), 2000);
+          setAccounts((prev) =>
+            prev.map((a) => (a.id === updated.id ? { ...a, ...updated } : a))
+          );
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "deriv_accounts" },
+        (payload: RTPayload) => {
+          touch();
+          setAccounts((prev) => prev.filter((a) => a.id !== (payload.old.id as string)));
         }
       )
       // ── SESSIONS ──
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "sessions" },
-        (payload: RTPayload<Session>) => {
+        { event: "INSERT", schema: "public", table: "sessions" },
+        (payload: RTPayload) => {
           touch();
-          if (payload.eventType === "INSERT") {
-            if (payload.new.is_active) setSessions((prev) => [payload.new, ...prev]);
-          } else if (payload.eventType === "UPDATE") {
-            setSessions((prev) => {
-              if (payload.new.is_active === false) {
-                return prev.filter((s) => s.id !== payload.new.id);
-              }
-              const exists = prev.some((s) => s.id === payload.new.id);
-              return exists
-                ? prev.map((s) => (s.id === payload.new.id ? { ...s, ...payload.new } : s))
-                : [payload.new, ...prev];
-            });
-          } else if (payload.eventType === "DELETE") {
-            setSessions((prev) => prev.filter((s) => s.id !== payload.old.id));
-          }
+          const s = payload.new as unknown as Session;
+          if (s.is_active) setSessions((prev) => [s, ...prev]);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "sessions" },
+        (payload: RTPayload) => {
+          touch();
+          const s = payload.new as unknown as Session;
+          setSessions((prev) => {
+            if (s.is_active === false) return prev.filter((p) => p.id !== s.id);
+            const exists = prev.some((p) => p.id === s.id);
+            return exists
+              ? prev.map((p) => (p.id === s.id ? { ...p, ...s } : p))
+              : [s, ...prev];
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "sessions" },
+        (payload: RTPayload) => {
+          touch();
+          setSessions((prev) => prev.filter((s) => s.id !== (payload.old.id as string)));
         }
       )
       // ── BOTS ──
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "bots" },
-        (payload: RTPayload<Bot>) => {
+        { event: "INSERT", schema: "public", table: "bots" },
+        (payload: RTPayload) => {
           touch();
-          if (payload.eventType === "INSERT") {
-            setBots((prev) => [payload.new, ...prev.slice(0, 9)]);
-          } else if (payload.eventType === "UPDATE") {
-            setBots((prev) =>
-              prev.map((b) => (b.id === payload.new.id ? { ...b, ...payload.new } : b))
-            );
-          } else if (payload.eventType === "DELETE") {
-            setBots((prev) => prev.filter((b) => b.id !== payload.old.id));
-          }
+          setBots((prev) => [payload.new as unknown as Bot, ...prev.slice(0, 9)]);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "bots" },
+        (payload: RTPayload) => {
+          touch();
+          setBots((prev) =>
+            prev.map((b) =>
+              b.id === payload.new.id ? { ...b, ...(payload.new as Partial<Bot>) } : b
+            )
+          );
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "bots" },
+        (payload: RTPayload) => {
+          touch();
+          setBots((prev) => prev.filter((b) => b.id !== (payload.old.id as string)));
         }
       )
       // ── AUDIT LOG ──
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "audit_log" },
-        (payload: RTPayload<AuditEntry>) => {
+        (payload: RTPayload) => {
           touch();
-          setAuditLog((prev) => [payload.new, ...prev.slice(0, 29)]);
+          setAuditLog((prev) => [payload.new as unknown as AuditEntry, ...prev.slice(0, 29)]);
         }
       )
       .subscribe();
