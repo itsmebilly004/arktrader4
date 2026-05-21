@@ -64,12 +64,21 @@ type DerivAccount = {
   balance_updated_at: string | null;
 };
 
+export type DailyVolume = {
+  date: string;
+  real: number;
+  demo: number;
+  realCount: number;
+  demoCount: number;
+};
+
 interface DashboardProps {
   initialTrades: Trade[];
   initialAuditLog: AuditEntry[];
   initialBots: Bot[];
   initialSessions: Session[];
   initialAccounts: DerivAccount[];
+  initialDailyVolume: DailyVolume[];
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -326,6 +335,144 @@ function VolumeBar({
   );
 }
 
+// ─── Daily volume chart (stacked bars: real + demo) ───────────────────────────
+
+function DailyVolumeChart({ data }: { data: DailyVolume[] }) {
+  const W = 800;
+  const H = 180;
+  const padL = 36;
+  const padR = 8;
+  const padT = 12;
+  const padB = 24;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  const maxVal = Math.max(...data.map((d) => d.real + d.demo), 1);
+  const barW = innerW / data.length;
+  const gap = Math.min(4, barW * 0.2);
+
+  const hasData = data.some((d) => d.real + d.demo > 0);
+
+  if (!hasData) {
+    return (
+      <div className="h-40 flex items-center justify-center text-gray-700 text-sm">
+        No daily volume yet. (Real/demo classification requires populated{" "}
+        <code className="text-gray-500">deriv_accounts</code> rows.)
+      </div>
+    );
+  }
+
+  const yTicks = [0, 0.5, 1].map((t) => ({
+    v: maxVal * t,
+    y: padT + innerH - t * innerH,
+  }));
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" aria-hidden>
+      {yTicks.map((t) => (
+        <g key={t.y}>
+          <line x1={padL} y1={t.y} x2={W - padR} y2={t.y} stroke="#1f2937" strokeWidth="1" />
+          <text x={padL - 4} y={t.y + 3} fontSize="9" textAnchor="end" fill="#4b5563">
+            ${Math.round(t.v).toLocaleString()}
+          </text>
+        </g>
+      ))}
+      {data.map((d, i) => {
+        const x = padL + i * barW + gap / 2;
+        const w = barW - gap;
+        const realH = (d.real / maxVal) * innerH;
+        const demoH = (d.demo / maxVal) * innerH;
+        const realY = padT + innerH - realH;
+        const demoY = realY - demoH;
+        const label = d.date.slice(5);
+        return (
+          <g key={d.date}>
+            {d.real > 0 && <rect x={x} y={realY} width={w} height={realH} fill="#10b981" rx="1" />}
+            {d.demo > 0 && <rect x={x} y={demoY} width={w} height={demoH} fill="#3b82f6" rx="1" />}
+            <text
+              x={x + w / 2}
+              y={H - padB + 12}
+              fontSize="9"
+              textAnchor="middle"
+              fill="#4b5563"
+            >
+              {label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ─── Admin actions (logout, pause, resume) ────────────────────────────────────
+
+function AdminActions() {
+  const [busy, setBusy] = useState<null | "pause" | "restore" | "logout">(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function call(path: string, action: "pause" | "restore" | "logout", confirmText?: string) {
+    if (confirmText && !window.confirm(confirmText)) return;
+    setBusy(action);
+    setMsg(null);
+    try {
+      const res = await fetch(path, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMsg(`✗ ${body.error || `HTTP ${res.status}`}`);
+      } else {
+        if (action === "logout") {
+          window.location.href = "/login";
+          return;
+        }
+        setMsg(`✓ ${action === "pause" ? "Pause" : "Restore"} request sent`);
+      }
+    } catch (e) {
+      setMsg(`✗ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(null);
+      if (action !== "logout") setTimeout(() => setMsg(null), 6000);
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      {msg && (
+        <span
+          className={`text-xs hidden md:inline ${
+            msg.startsWith("✓") ? "text-emerald-400" : "text-red-400"
+          }`}
+        >
+          {msg}
+        </span>
+      )}
+      <button
+        onClick={() =>
+          call("/api/supabase/pause", "pause", "Pause the Supabase project? The dashboard will stop loading data until you resume.")
+        }
+        disabled={busy !== null}
+        className="text-xs px-3 py-1.5 rounded-lg border border-yellow-800/60 text-yellow-300 hover:bg-yellow-900/30 disabled:opacity-50"
+      >
+        {busy === "pause" ? "…" : "Pause"}
+      </button>
+      <button
+        onClick={() => call("/api/supabase/restore", "restore", "Resume the Supabase project?")}
+        disabled={busy !== null}
+        className="text-xs px-3 py-1.5 rounded-lg border border-emerald-800/60 text-emerald-300 hover:bg-emerald-900/30 disabled:opacity-50"
+      >
+        {busy === "restore" ? "…" : "Resume"}
+      </button>
+      <button
+        onClick={() => call("/api/auth/logout", "logout")}
+        disabled={busy !== null}
+        className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+      >
+        Logout
+      </button>
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function Dashboard({
@@ -334,12 +481,14 @@ export default function Dashboard({
   initialBots,
   initialSessions,
   initialAccounts,
+  initialDailyVolume,
 }: DashboardProps) {
   const [trades, setTrades] = useState<Trade[]>(initialTrades);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>(initialAuditLog);
   const [bots, setBots] = useState<Bot[]>(initialBots);
   const [sessions] = useState<Session[]>(initialSessions);
   const [accounts] = useState<DerivAccount[]>(initialAccounts);
+  const [dailyVolume] = useState<DailyVolume[]>(initialDailyVolume);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [pulseId, setPulseId] = useState<string | null>(null);
 
@@ -450,6 +599,7 @@ export default function Dashboard({
             <span className="text-gray-600 hidden sm:block">
               Updated {timeAgo(lastUpdate.toISOString())}
             </span>
+            <AdminActions />
           </div>
         </div>
       </header>
@@ -537,6 +687,50 @@ export default function Dashboard({
               </div>
             </div>
             <TrendChart trades={trades} />
+          </div>
+        </div>
+
+        {/* ── Daily volume (last 14 days) ── */}
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              Daily Trade Volume · Last 14 Days · Real vs Demo
+            </h2>
+            <div className="flex items-center gap-3 text-xs text-gray-500">
+              <span className="flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" /> Real
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-sm bg-blue-500" /> Demo
+              </span>
+            </div>
+          </div>
+          <DailyVolumeChart data={dailyVolume} />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 text-xs">
+            <div className="bg-gray-800/60 rounded-lg p-3">
+              <p className="text-gray-500">Real volume (14d)</p>
+              <p className="text-emerald-400 font-semibold text-base mt-0.5 tabular-nums">
+                ${fmt(dailyVolume.reduce((s, d) => s + d.real, 0))}
+              </p>
+            </div>
+            <div className="bg-gray-800/60 rounded-lg p-3">
+              <p className="text-gray-500">Demo volume (14d)</p>
+              <p className="text-blue-400 font-semibold text-base mt-0.5 tabular-nums">
+                ${fmt(dailyVolume.reduce((s, d) => s + d.demo, 0))}
+              </p>
+            </div>
+            <div className="bg-gray-800/60 rounded-lg p-3">
+              <p className="text-gray-500">Real trades (14d)</p>
+              <p className="text-white font-semibold text-base mt-0.5 tabular-nums">
+                {dailyVolume.reduce((s, d) => s + d.realCount, 0).toLocaleString()}
+              </p>
+            </div>
+            <div className="bg-gray-800/60 rounded-lg p-3">
+              <p className="text-gray-500">Demo trades (14d)</p>
+              <p className="text-white font-semibold text-base mt-0.5 tabular-nums">
+                {dailyVolume.reduce((s, d) => s + d.demoCount, 0).toLocaleString()}
+              </p>
+            </div>
           </div>
         </div>
 
