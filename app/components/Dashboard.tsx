@@ -52,6 +52,7 @@ type Session = {
   currency: string | null;
   balance: number | null;
   is_demo: boolean;
+  is_active?: boolean;
   loginid: string | null;
 };
 
@@ -486,22 +487,28 @@ export default function Dashboard({
   const [trades, setTrades] = useState<Trade[]>(initialTrades);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>(initialAuditLog);
   const [bots, setBots] = useState<Bot[]>(initialBots);
-  const [sessions] = useState<Session[]>(initialSessions);
-  const [accounts] = useState<DerivAccount[]>(initialAccounts);
-  const [dailyVolume] = useState<DailyVolume[]>(initialDailyVolume);
+  const [sessions, setSessions] = useState<Session[]>(initialSessions);
+  const [accounts, setAccounts] = useState<DerivAccount[]>(initialAccounts);
+  const [dailyVolume, setDailyVolume] = useState<DailyVolume[]>(initialDailyVolume);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [pulseId, setPulseId] = useState<string | null>(null);
+  const [pulseAccountId, setPulseAccountId] = useState<string | null>(null);
 
   const touch = useCallback(() => setLastUpdate(new Date()), []);
 
   useEffect(() => {
     const supabase = createClient();
 
-    type RTPayload = { new: Record<string, unknown>; old: Record<string, unknown> };
+    type RTPayload<T = Record<string, unknown>> = {
+      eventType: "INSERT" | "UPDATE" | "DELETE";
+      new: T;
+      old: T;
+      table: string;
+    };
 
-    // Trades: re-fetch the inserted row with its join so we get account type
-    const tradesChannel = supabase
-      .channel("rt-trades")
+    const channel = supabase
+      .channel("dashboard-rt")
+      // ── TRADES ──
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "trades" },
@@ -514,10 +521,30 @@ export default function Dashboard({
             )
             .eq("id", payload.new.id as string)
             .single();
-          if (data) {
-            setPulseId(data.id);
-            setTimeout(() => setPulseId(null), 2000);
-            setTrades((prev) => [data as unknown as Trade, ...prev.slice(0, 49)]);
+          if (!data) return;
+          const trade = data as unknown as Trade;
+          setPulseId(trade.id);
+          setTimeout(() => setPulseId(null), 2000);
+          setTrades((prev) => [trade, ...prev.slice(0, 49)]);
+
+          // Update today's daily-volume bucket
+          const ref = accountRef(trade);
+          if (ref) {
+            const today = new Date().toISOString().slice(0, 10);
+            const stake = trade.stake ?? 0;
+            setDailyVolume((prev) =>
+              prev.map((d) =>
+                d.date === today
+                  ? {
+                      ...d,
+                      real: ref.is_demo ? d.real : d.real + stake,
+                      demo: ref.is_demo ? d.demo + stake : d.demo,
+                      realCount: ref.is_demo ? d.realCount : d.realCount + 1,
+                      demoCount: ref.is_demo ? d.demoCount + 1 : d.demoCount,
+                    }
+                  : d
+              )
+            );
           }
         }
       )
@@ -533,40 +560,86 @@ export default function Dashboard({
           );
         }
       )
-      .subscribe();
-
-    const auditChannel = supabase
-      .channel("rt-audit")
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "trades" },
+        (payload: RTPayload) => {
+          touch();
+          setTrades((prev) => prev.filter((t) => t.id !== (payload.old.id as string)));
+        }
+      )
+      // ── DERIV ACCOUNTS (balances) ──
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "deriv_accounts" },
+        (payload: RTPayload<DerivAccount>) => {
+          touch();
+          if (payload.eventType === "INSERT") {
+            setAccounts((prev) => [payload.new, ...prev]);
+          } else if (payload.eventType === "UPDATE") {
+            setPulseAccountId(payload.new.id);
+            setTimeout(() => setPulseAccountId(null), 2000);
+            setAccounts((prev) =>
+              prev.map((a) => (a.id === payload.new.id ? { ...a, ...payload.new } : a))
+            );
+          } else if (payload.eventType === "DELETE") {
+            setAccounts((prev) => prev.filter((a) => a.id !== payload.old.id));
+          }
+        }
+      )
+      // ── SESSIONS ──
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "sessions" },
+        (payload: RTPayload<Session>) => {
+          touch();
+          if (payload.eventType === "INSERT") {
+            if (payload.new.is_active) setSessions((prev) => [payload.new, ...prev]);
+          } else if (payload.eventType === "UPDATE") {
+            setSessions((prev) => {
+              if (payload.new.is_active === false) {
+                return prev.filter((s) => s.id !== payload.new.id);
+              }
+              const exists = prev.some((s) => s.id === payload.new.id);
+              return exists
+                ? prev.map((s) => (s.id === payload.new.id ? { ...s, ...payload.new } : s))
+                : [payload.new, ...prev];
+            });
+          } else if (payload.eventType === "DELETE") {
+            setSessions((prev) => prev.filter((s) => s.id !== payload.old.id));
+          }
+        }
+      )
+      // ── BOTS ──
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "bots" },
+        (payload: RTPayload<Bot>) => {
+          touch();
+          if (payload.eventType === "INSERT") {
+            setBots((prev) => [payload.new, ...prev.slice(0, 9)]);
+          } else if (payload.eventType === "UPDATE") {
+            setBots((prev) =>
+              prev.map((b) => (b.id === payload.new.id ? { ...b, ...payload.new } : b))
+            );
+          } else if (payload.eventType === "DELETE") {
+            setBots((prev) => prev.filter((b) => b.id !== payload.old.id));
+          }
+        }
+      )
+      // ── AUDIT LOG ──
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "audit_log" },
-        (payload: RTPayload) => {
+        (payload: RTPayload<AuditEntry>) => {
           touch();
-          setAuditLog((prev) => [payload.new as unknown as AuditEntry, ...prev.slice(0, 29)]);
-        }
-      )
-      .subscribe();
-
-    const botsChannel = supabase
-      .channel("rt-bots")
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "bots" },
-        (payload: RTPayload) => {
-          touch();
-          setBots((prev) =>
-            prev.map((b) =>
-              b.id === payload.new.id ? { ...b, ...(payload.new as Partial<Bot>) } : b
-            )
-          );
+          setAuditLog((prev) => [payload.new, ...prev.slice(0, 29)]);
         }
       )
       .subscribe();
 
     return () => {
-      supabase.removeChannel(tradesChannel);
-      supabase.removeChannel(auditChannel);
-      supabase.removeChannel(botsChannel);
+      supabase.removeChannel(channel);
     };
   }, [touch]);
 
@@ -832,7 +905,12 @@ export default function Dashboard({
               ) : (
                 <div className="divide-y divide-gray-800/60">
                   {accounts.map((acc) => (
-                    <div key={acc.id} className="px-5 py-3 flex items-center justify-between gap-3">
+                    <div
+                      key={acc.id}
+                      className={`px-5 py-3 flex items-center justify-between gap-3 transition-colors ${
+                        pulseAccountId === acc.id ? "bg-emerald-900/30" : ""
+                      }`}
+                    >
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <AccountTag isDemo={acc.is_demo} />
