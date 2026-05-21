@@ -1,19 +1,17 @@
-import { createClient } from "@/utils/supabase/server";
-import { cookies } from "next/headers";
+import { createAdminClient } from "@/utils/supabase/server";
 import Dashboard, { type Trade } from "@/app/components/Dashboard";
 
 export const revalidate = 0;
 
 export default async function Page() {
-  const cookieStore = await cookies();
-  const supabase = createClient(cookieStore);
+  const supabase = createAdminClient();
 
   const [
-    { data: trades },
-    { data: auditLog },
-    { data: bots },
-    { data: sessions },
-    { data: accounts },
+    { data: trades, error: tradesErr },
+    { data: auditLog, error: auditErr },
+    { data: bots, error: botsErr },
+    { data: sessions, error: sessionsErr },
+    { data: accounts, error: accountsErr },
   ] = await Promise.all([
     supabase
       .from("trades")
@@ -45,6 +43,12 @@ export default async function Page() {
       .select("id, account_id, currency, is_demo, balance, balance_updated_at")
       .order("created_at", { ascending: false }),
   ]);
+
+  // Log errors server-side so they appear in Vercel function logs.
+  const errors = { tradesErr, auditErr, botsErr, sessionsErr, accountsErr };
+  for (const [key, err] of Object.entries(errors)) {
+    if (err) console.error(`[page] Supabase query error (${key}):`, err.message);
+  }
 
   return (
     <Dashboard
