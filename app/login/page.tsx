@@ -24,7 +24,8 @@ function LoginForm() {
       router.push(next);
       router.refresh();
     } else {
-      setError("Invalid password");
+      const body = await res.json().catch(() => ({}));
+      setError(body.error || `HTTP ${res.status}`);
       setLoading(false);
     }
   }
